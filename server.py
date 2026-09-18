@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from azure_clients import embed_query, query_items, search_client, container
 from permissions import (
@@ -37,6 +39,14 @@ from permissions import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("aios-mcp")
 
+# FastMCP defaults to localhost-only Host checks → Railway/Azure get 421 Invalid Host header.
+# Set MCP_ALLOWED_HOSTS (comma-separated) to re-enable protection for known public hosts.
+_allowed_hosts = [h.strip() for h in os.getenv("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+_transport_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=bool(_allowed_hosts),
+    allowed_hosts=_allowed_hosts,
+)
+
 mcp = FastMCP(
     "aios-mcp",
     instructions=(
@@ -45,6 +55,7 @@ mcp = FastMCP(
         "Do not invent DB/tool results. Escalation creates a package for humans; "
         "it does not auto-approve high-risk actions."
     ),
+    transport_security=_transport_security,
 )
 
 # Expose ASGI app for Azure App Service / uvicorn
@@ -426,9 +437,7 @@ def escalation_create(
 
 
 def main():
-    import os
-
-    # stdio = local Cursor; streamable-http/sse = Azure App Service remote MCP
+    # stdio = local Cursor; streamable-http/sse = remote MCP (Railway / Azure)
     transport = os.getenv("MCP_TRANSPORT", "stdio").strip().lower()
     if transport not in {"stdio", "sse", "streamable-http"}:
         transport = "stdio"
