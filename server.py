@@ -28,12 +28,21 @@ from permissions import (
     TOOL_ORDER_LOOKUP,
     TOOL_POLICY_LOOKUP,
     TOOL_RESOLVED_CASE_SEARCH,
+    TOOL_SALES_ONBOARDING_INVOKE,
+    TOOL_SALES_OUTREACH_INVOKE,
+    TOOL_SALES_QUOTING_INVOKE,
     TOOL_TRANSACTION_LOOKUP,
     TOOL_VECTOR_SEARCH,
     TOOL_WORKFLOW_LOOKUP,
     PermissionDenied,
     require_tool,
     tools_for_agent,
+)
+from sales_invoke import (
+    DEFAULT_ONBOARDING_URL,
+    DEFAULT_OUTREACH_URL,
+    DEFAULT_QUOTING_URL,
+    invoke_sales_agent,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -430,6 +439,102 @@ def escalation_create(
                 "escalation": doc,
             }
         )
+    except PermissionDenied as e:
+        return _err(str(e), "permission_denied")
+    except Exception as e:
+        return _err(str(e))
+
+
+@mcp.tool(
+    name=TOOL_SALES_OUTREACH_INVOKE,
+    description=(
+        "Orchestrator-only: invoke Sales Agent 1 (Outreach / Follow-ups) via n8n webhook. "
+        "Pass full lead message/context. Does not send Stage-1 outreach email itself — the n8n agent drafts."
+    ),
+)
+def sales_outreach_invoke(
+    agent_id: str,
+    message: str,
+    context_json: str = "",
+    company: str = "",
+    company_email: str = "",
+) -> str:
+    try:
+        _guard(agent_id, TOOL_SALES_OUTREACH_INVOKE)
+        if not (message or "").strip():
+            return _err("message is required")
+        result = invoke_sales_agent(
+            env_name="N8N_SALES_OUTREACH_URL",
+            default_url=DEFAULT_OUTREACH_URL,
+            message=message,
+            context_json=context_json,
+            extra={"company": company, "company_email": company_email},
+        )
+        return _ok(result)
+    except PermissionDenied as e:
+        return _err(str(e), "permission_denied")
+    except Exception as e:
+        return _err(str(e))
+
+
+@mcp.tool(
+    name=TOOL_SALES_QUOTING_INVOKE,
+    description=(
+        "Orchestrator-only: invoke Sales Agent 2 (Quoting & Negotiation) via n8n webhook. "
+        "Pass complete handoff context from Outreach (industry, deal size, conversation history)."
+    ),
+)
+def sales_quoting_invoke(
+    agent_id: str,
+    message: str,
+    context_json: str = "",
+    company: str = "",
+    deal_size: str = "",
+) -> str:
+    try:
+        _guard(agent_id, TOOL_SALES_QUOTING_INVOKE)
+        if not (message or "").strip():
+            return _err("message is required")
+        result = invoke_sales_agent(
+            env_name="N8N_SALES_QUOTING_URL",
+            default_url=DEFAULT_QUOTING_URL,
+            message=message,
+            context_json=context_json,
+            extra={"company": company, "deal_size": deal_size},
+        )
+        return _ok(result)
+    except PermissionDenied as e:
+        return _err(str(e), "permission_denied")
+    except Exception as e:
+        return _err(str(e))
+
+
+@mcp.tool(
+    name=TOOL_SALES_ONBOARDING_INVOKE,
+    description=(
+        "Orchestrator-only: invoke Sales Agent 3 (Onboarding / Stage 5) via n8n webhook. "
+        "Pass signed terms + full lead history from Quoting. Do not use for prospecting or quoting."
+    ),
+)
+def sales_onboarding_invoke(
+    agent_id: str,
+    message: str,
+    context_json: str = "",
+    company: str = "",
+    signed_terms: str = "",
+) -> str:
+    try:
+        _guard(agent_id, TOOL_SALES_ONBOARDING_INVOKE)
+        if not (message or "").strip():
+            return _err("message is required")
+        result = invoke_sales_agent(
+            env_name="N8N_SALES_ONBOARDING_URL",
+            default_url=DEFAULT_ONBOARDING_URL,
+            message=message,
+            context_json=context_json,
+            extra={"company": company, "signed_terms": signed_terms},
+        )
+        return _ok(result)
     except PermissionDenied as e:
         return _err(str(e), "permission_denied")
     except Exception as e:
