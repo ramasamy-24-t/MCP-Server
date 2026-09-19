@@ -31,6 +31,10 @@ TOOL_DEVICE_LOOKUP = "device_lookup"
 TOOL_WORKFLOW_LOOKUP = "workflow_lookup"
 TOOL_ESCALATION_CREATE = "escalation_create"
 TOOL_LIST_MY_TOOLS = "list_my_tools"
+# Sales pipeline: Orchestrator invokes teammate n8n agents (HTTP), does not own Gmail/Sheets
+TOOL_SALES_OUTREACH_INVOKE = "sales_outreach_invoke"
+TOOL_SALES_QUOTING_INVOKE = "sales_quoting_invoke"
+TOOL_SALES_ONBOARDING_INVOKE = "sales_onboarding_invoke"
 
 AGENT_PERMISSIONS: Final[dict[str, set[str]]] = {
     ORDERS_AGENT: {
@@ -84,6 +88,10 @@ AGENT_PERMISSIONS: Final[dict[str, set[str]]] = {
         TOOL_WORKFLOW_LOOKUP,
         TOOL_LIST_MY_TOOLS,
         TOOL_ESCALATION_CREATE,
+        # Sales stage agents (n8n webhooks) — CS agents must NOT get these
+        TOOL_SALES_OUTREACH_INVOKE,
+        TOOL_SALES_QUOTING_INVOKE,
+        TOOL_SALES_ONBOARDING_INVOKE,
     },
     MONITORING_AGENT: {
         TOOL_WORKFLOW_LOOKUP,
