@@ -47,6 +47,19 @@ AZURE_OPENAI_API_VERSION=2024-02-01
 AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-large
 ```
 
+### Sales agent invoke (Orchestrator → n8n)
+
+Optional; defaults to `agentos97` webhooks if unset:
+
+```text
+N8N_SALES_OUTREACH_URL=https://agentos97.app.n8n.cloud/webhook/sales-lead-intake
+N8N_SALES_QUOTING_URL=https://agentos97.app.n8n.cloud/webhook/quoting-agent
+N8N_SALES_ONBOARDING_URL=https://agentos97.app.n8n.cloud/webhook/onboarding-agent
+N8N_SALES_INVOKE_TIMEOUT_SEC=120
+```
+
+Only `ORCHESTRATOR` may call `sales_outreach_invoke`, `sales_quoting_invoke`, `sales_onboarding_invoke`.
+
 Railway sets `PORT` automatically — do not hardcode it.
 
 ## 3. Deploy
