@@ -233,20 +233,50 @@ def transaction_lookup(
 
 @mcp.tool(
     name=TOOL_POLICY_LOOKUP,
-    description="Look up policy registry records by policyId (Cosmos). Prefer active version.",
+    description=(
+        "Look up policy registry by policyId (Cosmos). Returns current active policy plus "
+        "superseded/previous versions as historical_reference (examples only — current wins)."
+    ),
 )
 def policy_lookup(agent_id: str, policy_id: str = "", active_only: bool = True) -> str:
     try:
         _guard(agent_id, TOOL_POLICY_LOOKUP)
         if policy_id:
-            q = "SELECT * FROM c WHERE c.policyId = @pid"
+            q_all = "SELECT * FROM c WHERE c.policyId = @pid"
             params = [{"name": "@pid", "value": policy_id}]
+            all_rows = query_items("AZURE_COSMOS_CONTAINER_POLICIES", "policies", q_all, params)
+            active = [r for r in all_rows if (r.get("status") or "").lower() == "active"]
+            historical = [
+                r
+                for r in all_rows
+                if (r.get("status") or "").lower() in ("superseded", "deprecated", "inactive")
+            ]
+            # Sort historical newest-superseded first if dates exist
+            historical.sort(key=lambda r: r.get("supersededDate") or r.get("updatedAt") or "", reverse=True)
             if active_only:
-                q += " AND c.status = 'active'"
-        else:
-            q = "SELECT * FROM c WHERE c.status = 'active'" if active_only else "SELECT * FROM c"
-            params = []
-        rows = query_items("AZURE_COSMOS_CONTAINER_POLICIES", "policies", q, params)
+                return _ok(
+                    {
+                        "count": len(active),
+                        "policies": active,
+                        "current": active[0] if active else None,
+                        "historical_reference": historical,
+                        "note": (
+                            "Apply CURRENT active policy only. "
+                            "historical_reference (previous versions) is for comparison/examples — not authority."
+                        ),
+                    }
+                )
+            return _ok(
+                {
+                    "count": len(all_rows),
+                    "policies": all_rows,
+                    "current": active[0] if active else None,
+                    "historical_reference": historical,
+                    "note": "Apply CURRENT active policy. Older versions are reference only.",
+                }
+            )
+        q = "SELECT * FROM c WHERE c.status = 'active'" if active_only else "SELECT * FROM c"
+        rows = query_items("AZURE_COSMOS_CONTAINER_POLICIES", "policies", q, [])
         return _ok({"count": len(rows), "policies": rows})
     except PermissionDenied as e:
         return _err(str(e), "permission_denied")
@@ -256,7 +286,11 @@ def policy_lookup(agent_id: str, policy_id: str = "", active_only: bool = True) 
 
 @mcp.tool(
     name=TOOL_VECTOR_SEARCH,
-    description="Semantic search over Azure AI Search knowledge index (policies, FAQs, cases).",
+    description=(
+        "Semantic search over Azure AI Search knowledge index (policies, FAQs, cases). "
+        "Hits may include current policy, superseded policy text, and resolved cases — "
+        "always prefer active Cosmos policy_lookup over older case/policy chunks."
+    ),
 )
 def vector_search(agent_id: str, query: str, top_k: int = 5) -> str:
     try:
@@ -279,15 +313,40 @@ def vector_search(agent_id: str, query: str, top_k: int = 5) -> str:
         )
         hits = []
         for doc in results:
+            meta = doc.get("metadata") or {}
+            if not isinstance(meta, dict):
+                meta = {}
+            # Flatten top-level index fields if present (depends on ingest schema)
+            for key in ("source", "category", "product_id", "policy_id", "policy_version", "doc_type"):
+                if doc.get(key) is not None and not meta.get(key):
+                    meta[key] = doc.get(key)
+            # Also parse attributes list shape used by some ingest paths
+            attrs = meta.get("attributes")
+            if isinstance(attrs, list):
+                for item in attrs:
+                    if isinstance(item, dict) and item.get("key") and item.get("value") is not None:
+                        meta.setdefault(str(item["key"]), item["value"])
             hits.append(
                 {
                     "score": doc.get("@search.score"),
                     "id": doc.get("id"),
                     "content": (doc.get("content") or "")[:1200],
-                    "metadata": doc.get("metadata"),
+                    "metadata": meta,
+                    "policy_id": meta.get("policy_id") or doc.get("policy_id"),
+                    "policy_version": meta.get("policy_version") or doc.get("policy_version"),
+                    "doc_type": meta.get("doc_type") or doc.get("doc_type") or meta.get("category"),
                 }
             )
-        return _ok({"count": len(hits), "hits": hits})
+        return _ok(
+            {
+                "count": len(hits),
+                "hits": hits,
+                "note": (
+                    "Vector hits may mix current policy, superseded policy, and resolved cases. "
+                    "Call policy_lookup for the active version; treat older hits as reference only."
+                ),
+            }
+        )
     except PermissionDenied as e:
         return _err(str(e), "permission_denied")
     except Exception as e:
@@ -296,7 +355,10 @@ def vector_search(agent_id: str, query: str, top_k: int = 5) -> str:
 
 @mcp.tool(
     name=TOOL_RESOLVED_CASE_SEARCH,
-    description="Find similar resolved cases (examples only; current policy still wins).",
+    description=(
+        "Find similar resolved cases (historical examples). Also attaches current active policy "
+        "for the case's policyId when available — current policy still wins over the case outcome."
+    ),
 )
 def resolved_case_search(agent_id: str, issue_type: str = "", query: str = "", limit: int = 5) -> str:
     try:
@@ -311,25 +373,52 @@ def resolved_case_search(agent_id: str, issue_type: str = "", query: str = "", l
                 [{"name": "@it", "value": issue_type}],
             )
         elif query:
-            # hybrid: vector search filtered conceptually by text; also cosmos scan
             vector_json = json.loads(vector_search(agent_id, query, top_k=limit))
             q = f"SELECT TOP {limit} * FROM c"
             rows = query_items("AZURE_COSMOS_CONTAINER_RESOLVED_CASES", "resolved_cases", q, [])
+            current_policy = None
+            historical_policy_reference: list = []
+            for row in rows:
+                pid = row.get("applicablePolicyId")
+                if pid:
+                    pol = json.loads(policy_lookup(agent_id, policy_id=pid, active_only=True))
+                    if pol.get("ok"):
+                        data = pol.get("data") or {}
+                        current_policy = data.get("current")
+                        historical_policy_reference = data.get("historical_reference") or []
+                    break
             return _ok(
                 {
                     "note": "Historical cases are examples only. Apply current active policy.",
                     "cosmos_cases": rows,
+                    "current_policy": current_policy,
+                    "historical_policy_reference": historical_policy_reference,
                     "vector_hits": vector_json.get("data", {}).get("hits", []) if vector_json.get("ok") else [],
                 }
             )
         else:
             q = f"SELECT TOP {limit} * FROM c"
             rows = query_items("AZURE_COSMOS_CONTAINER_RESOLVED_CASES", "resolved_cases", q, [])
+
+        current_policy = None
+        historical_policy_reference: list = []
+        for row in rows:
+            pid = row.get("applicablePolicyId")
+            if pid:
+                pol = json.loads(policy_lookup(agent_id, policy_id=pid, active_only=True))
+                if pol.get("ok"):
+                    data = pol.get("data") or {}
+                    current_policy = data.get("current")
+                    historical_policy_reference = data.get("historical_reference") or []
+                break
+
         return _ok(
             {
                 "note": "Historical cases are examples only. Apply current active policy.",
                 "count": len(rows),
                 "cases": rows,
+                "current_policy": current_policy,
+                "historical_policy_reference": historical_policy_reference,
             }
         )
     except PermissionDenied as e:
